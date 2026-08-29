@@ -2,131 +2,161 @@
 
 Persistent HTTP History keeps a durable, searchable copy of Burp HTTP request/response traffic in SQLite so Community Edition users do not lose their research history when Burp closes.
 
-Current version: **v2.0.0**
+Current version: **v2.1.0**
 
-## V2: isolated workspaces
+## v2.1: Burp-style workspace scope
 
-V2 adds separate workspaces so unrelated targets do not need to share one history database.
+V2.1 upgrades each managed workspace from simple target roots to structured scope rules.
 
-Each managed workspace has:
-
-- its own SQLite database;
-- a human-readable program/workspace name;
-- optional target-root rules;
-- an independently clearable history;
-- the same Burp-native request/response editors and Tool provenance from v1.
-
-Example:
+Open:
 
 ```text
-Workspace: Example A
-Targets: example-a.com
-Database: ~/.burp-persistent-history/workspaces/example-a-<id>/history.sqlite3
-
-Workspace: Example B
-Targets: example-b.com
-Database: ~/.burp-persistent-history/workspaces/example-b-<id>/history.sqlite3
+Persistent History -> Scope...
 ```
 
-A target root such as `example.com` matches both `example.com` and its subdomains such as `api.example.com`. Multiple roots can be entered for programs that use unrelated domains.
+The scope editor provides separate **Include in workspace** and **Exclude from workspace** tables with:
 
-Traffic outside a scoped workspace's configured targets is **not persisted into that workspace**. The UI shows a skipped-outside-targets counter so accidental browsing of another target does not silently mix the histories.
+- Enabled
+- Protocol (`any`, `http`, `https`)
+- Host / IP range
+- Port
+- File / path
 
-## Existing v1 history
-
-V2 is backward compatible with the existing v1 database:
+Each table supports:
 
 ```text
-~/.burp-persistent-history/history.sqlite3
+Add
+Edit
+Remove
 ```
 
-If it exists, V2 exposes it as:
+The scope window also supports:
+
+```text
+Import Burp JSON...
+```
+
+Use this with a JSON settings file saved from Burp's Target scope settings. The importer recognizes the normal Burp structure:
+
+```json
+{
+  "target": {
+    "scope": {
+      "advanced_mode": true,
+      "include": [],
+      "exclude": []
+    }
+  }
+}
+```
+
+It also accepts full Burp settings JSON files when the `target.scope` section is nested inside the document, and it converts normal-scope `prefix` entries into structured rules.
+
+Importing only loads the rules into the editor. Review them and click **Save** before they become active.
+
+## Scope behavior
+
+For a managed scoped workspace, a URL is persisted only when:
+
+1. it matches an enabled include rule; and
+2. it does not match any enabled exclude rule.
+
+Advanced fields follow Burp's scope model:
+
+- Protocol matches HTTP, HTTPS, or either.
+- Host supports regular expressions and common IPv4 CIDR / octet-range forms.
+- Port is a regular expression.
+- File is a regular expression against the URL path.
+- Query strings are ignored for File matching.
+
+An explicit **Unscoped: capture all targets** checkbox preserves the original capture-all workspace behavior. This is separate from a scoped workspace with zero include rules, which captures nothing.
+
+Persistent History workspace scope does **not** modify Burp's own Target scope. This is intentional: Burp scope controls Burp; workspace scope controls what this extension writes to disk.
+
+## Backward compatibility
+
+No history database reset is required.
+
+### v1 history
+
+The original database remains available as:
 
 ```text
 Legacy / Unscoped
 ```
 
-No migration, deletion, or reset is required. The legacy workspace intentionally remains unscoped so the original v1 behavior and data are preserved. Create a new scoped workspace for target isolation.
+at:
+
+```text
+~/.burp-persistent-history/history.sqlite3
+```
+
+### v2.0 workspaces
+
+Existing v2.0 `targets=` roots are converted into structured include rules on first v2.1 load. Their existing SQLite databases are reused.
+
+Each managed workspace now stores its scope beside its database:
+
+```text
+~/.burp-persistent-history/workspaces/<workspace-id>/
+├── workspace.properties
+├── scope.json
+└── history.sqlite3
+```
+
+`scope.json` uses a Burp-compatible `target.scope` JSON shape.
 
 ## Core features
 
-- Captures completed HTTP request/response pairs through Montoya `HttpHandler`.
-- Stores complete raw request and response bytes as SQLite BLOBs.
-- Persists across Burp restarts.
-- Adds a **Persistent History** suite tab.
+- Persistent full HTTP request and response bytes.
+- Separate SQLite database per managed workspace.
 - Search by URL, method, status, or Burp tool.
-- Preserves Burp Tool provenance such as **Proxy** and **Repeater**.
-- Uses Burp's native read-only HTTP request/response editors.
-- Restores HTTP target/service metadata so **Send to Repeater** knows host, port, and HTTP/HTTPS.
-- Pause/resume capture.
-- Clear only the currently selected workspace.
-- SQLite WAL mode and busy timeout.
+- Tool provenance such as **Proxy** and **Repeater**.
+- Burp-native read-only HTTP request/response editors.
+- Historical requests retain target metadata for **Send to Repeater**.
+- Capture pause/resume.
+- Clear only the selected workspace.
 - Duplicate-callback protection using Montoya message IDs.
-- Large/binary response byte-fidelity coverage.
-- Metadata-only loading for the newest 5,000 table rows.
-- Database work runs off Swing's event-dispatch thread.
+- Binary and large-response fidelity tests.
+- Metadata-only table loading for the newest 5,000 records.
+- Database work stays off Swing's event-dispatch thread.
+- Existing v1 and v2.0 data remain available.
 
-## Workspace UI
+## Quick workspace setup
 
-The top of the **Persistent History** tab now contains:
-
-```text
-Workspace: [ Example A v ] [ New workspace ] [ Targets... ] Targets: example-a.com
-Search:    [ ............................................................. ]
-```
-
-### Create a workspace
-
-Click **New workspace** and enter:
+For a simple program you can still use target roots when creating the workspace:
 
 ```text
-Workspace / program name:
-Example A
+Workspace: Example Program
 
-Target roots:
-example-a.com
-api.partner-example.net
+Quick target roots:
+example.com
+api.example.net
 ```
 
-Target input accepts one item per line or comma-separated values. `*.example.com` is normalized to `example.com`, and an HTTP/HTTPS URL is normalized to its hostname.
+A root such as `example.com` includes `example.com` and its subdomains.
 
-Leaving target roots empty creates an intentionally unscoped workspace that captures all HTTP targets.
+For more precise control, create the workspace and then use **Scope...**.
 
-### Switch workspaces
+## Importing the same scope you use in Burp
 
-Selecting another workspace changes both the history being displayed and the database receiving new captured traffic.
-
-The selected workspace is remembered across extension/Burp restarts.
-
-### Edit target roots
-
-Click **Targets...** to modify the active managed workspace's target roots. The v1 **Legacy / Unscoped** database cannot be scoped in place; create a managed workspace instead.
-
-## Storage layout
-
-Default root:
-
-- Windows: `%USERPROFILE%\.burp-persistent-history\`
-- Linux/macOS: `~/.burp-persistent-history/`
-
-Layout after creating workspaces:
+A convenient workflow is:
 
 ```text
-.burp-persistent-history/
-├── history.sqlite3                  # existing v1 history, if present
-├── active-workspace.txt
-└── workspaces/
-    ├── example-a-a1b2c3d4/
-    │   ├── workspace.properties
-    │   └── history.sqlite3
-    └── example-b-e5f6a7b8/
-        ├── workspace.properties
-        └── history.sqlite3
+Burp Target -> Scope -> settings menu -> Save settings
+                               |
+                               v
+                         scope-settings.json
+                               |
+                               v
+Persistent History -> Scope... -> Import Burp JSON...
 ```
 
-Treat these databases as sensitive. They may contain cookies, authorization headers, bearer tokens, personal data, and request/response bodies from testing sessions.
+The two scopes remain independent after import. Changing one does not silently modify the other.
 
-## Requirements
+## Build
+
+Requirements:
 
 - Current Burp Suite Community or Professional
 - JDK 21
@@ -134,105 +164,60 @@ Treat these databases as sensitive. They may contain cookies, authorization head
 
 The extension targets Montoya API **2026.7**.
 
-## Clone / update
-
-First clone:
+Clone/update:
 
 ```powershell
 git clone https://github.com/tobiasGuta/Persistent-History.git
 cd Persistent-History
 ```
 
-Later updates:
+Later:
 
 ```powershell
 git pull origin main
 ```
 
-## Build
-
-Windows:
+Build:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-Or:
+or:
 
 ```powershell
 mvn clean verify
 ```
 
-Loadable JAR:
+Load:
 
 ```text
-target/burp-persistent-history-2.0.0.jar
+target/burp-persistent-history-2.1.0.jar
 ```
 
-## Load into Burp
-
-1. Remove/disable an older Persistent HTTP History build.
-2. Go to **Extensions -> Add**.
-3. Choose **Java**.
-4. Select `target/burp-persistent-history-2.0.0.jar`.
-5. Open **Persistent History**.
-
-Expected output includes:
+in:
 
 ```text
-Persistent HTTP History v2.0.0 loaded
-Storage root: C:\Users\<you>\.burp-persistent-history
-Active workspace: Legacy / Unscoped
+Burp -> Extensions -> Add -> Java
 ```
 
-The active workspace can differ if a managed workspace was selected previously.
+## Suggested v2.1 acceptance test
 
-## Automated coverage
+1. Load v2.1 and confirm your existing v1/v2 history is still present.
+2. Create or select a managed workspace.
+3. Open **Scope...**.
+4. Confirm existing quick target roots appear as include rules.
+5. Add an include rule and an exclude rule manually.
+6. Generate matching and excluded traffic and confirm only the intended requests are stored.
+7. Save a Target scope JSON file from Burp.
+8. Use **Import Burp JSON...** in the workspace.
+9. Review the imported Include/Exclude tables and click **Save**.
+10. Generate one in-scope request and one unrelated request.
+11. Confirm the unrelated request is skipped.
+12. Restart Burp and confirm both workspace history and scope rules survive.
 
-`mvn verify` covers the v1 persistence core plus V2 isolation behavior, including:
+## Security note
 
-- same Montoya message ID stored once;
-- legitimate repeated requests kept separately;
-- Repeater Tool provenance preserved;
-- paused capture writes nothing;
-- scoped workspace rejects unrelated targets;
-- root-domain rules permit subdomains but not lookalike domains;
-- two program workspaces persist into different SQLite databases;
-- active workspace selection survives restart;
-- the existing v1 database appears as **Legacy / Unscoped** without migration;
-- binary and large responses round-trip byte-for-byte;
-- metadata queries avoid materializing message BLOBs.
+The SQLite databases can contain authentication headers, cookies, tokens, personal data, and complete request/response bodies. Treat the `.burp-persistent-history` directory as sensitive.
 
-## Manual V2 acceptance test
-
-1. Load v2.0.0 and confirm your old v1 rows are visible under **Legacy / Unscoped**.
-2. Create workspace `Example A` with target `example-a.test` or another authorized test target.
-3. Send normal Proxy traffic to that target and confirm it appears.
-4. Send a request to an unrelated test hostname and confirm it does **not** appear; the skipped counter should increment after refresh.
-5. Create `Example B` with its own target root.
-6. Switch to Example B and generate traffic there.
-7. Switch between Example A and Example B and confirm each history remains isolated.
-8. Send an old persisted request to Repeater and confirm Burp does not ask for target details.
-9. Restart Burp, reload the extension, and confirm the previously selected workspace and both databases remain intact.
-
-## Version notes
-
-### v2.0.0
-
-Adds persistent per-program workspaces, separate SQLite databases, target-root scoping, workspace switching, target editing, skipped-outside-target visibility, current-workspace clearing, active-workspace persistence, and backward-compatible access to the v1 database as **Legacy / Unscoped**.
-
-### v1.0.3
-
-Restores Burp `HttpService` metadata from persisted absolute URLs so native **Send to Repeater** actions retain host, port, and HTTP/HTTPS target details.
-
-### v1.0.2
-
-Hardens duplicate handling, Repeater provenance, large/binary response storage, and the 5,000-row UI data path. Replaces plain text viewers with Burp's native Montoya HTTP request/response editors.
-
-### v1.0.1
-
-Fixes SQLite initialization under Burp's isolated extension class loader by explicitly instantiating the Xerial SQLite JDBC driver.
-
-### v1.0.0
-
-Initial persistent SQLite-backed HTTP history implementation.
+Scope JSON is local configuration. Imports are limited to 5 MiB and invalid regexes are rejected before the scope can be saved.

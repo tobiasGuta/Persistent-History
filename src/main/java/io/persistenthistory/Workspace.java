@@ -2,50 +2,34 @@ package io.persistenthistory;
 
 import java.nio.file.Path;
 import java.util.List;
-import java.util.Locale;
 
 public record Workspace(
         String id,
         String name,
         List<String> targets,
+        WorkspaceScope scope,
         Path databasePath,
         boolean legacy
 ) {
     public Workspace {
         targets = List.copyOf(targets == null ? List.of() : targets);
+        scope = scope == null ? WorkspaceScope.fromTargetRoots(targets) : scope;
+    }
+
+    public Workspace(String id, String name, List<String> targets, Path databasePath, boolean legacy) {
+        this(id, name, targets, WorkspaceScope.fromTargetRoots(targets), databasePath, legacy);
     }
 
     public boolean captures(String url) {
-        if (targets.isEmpty()) {
-            return true;
-        }
-        return RequestTarget.fromUrl(url)
-                .map(target -> matchesHost(target.host()))
-                .orElse(false);
+        return scope.captures(url);
     }
 
     public boolean scoped() {
-        return !targets.isEmpty();
+        return scope.scoped();
     }
 
     public String scopeLabel() {
-        return scoped() ? String.join(", ", targets) : "All targets (unscoped)";
-    }
-
-    private boolean matchesHost(String value) {
-        if (value == null || value.isBlank()) {
-            return false;
-        }
-        String host = value.toLowerCase(Locale.ROOT);
-        if (host.endsWith(".")) {
-            host = host.substring(0, host.length() - 1);
-        }
-        for (String root : targets) {
-            if (host.equals(root) || host.endsWith("." + root)) {
-                return true;
-            }
-        }
-        return false;
+        return scope.summary();
     }
 
     @Override

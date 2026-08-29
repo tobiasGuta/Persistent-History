@@ -3,6 +3,7 @@ package io.persistenthistory;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
@@ -53,14 +54,19 @@ class WorkspaceManagerTest {
             assertEquals(exampleB.id(), storedB.workspaceId());
             assertEquals(1, manager.databaseFor(exampleA.id()).count());
             assertEquals(1, manager.databaseFor(exampleB.id()).count());
-            assertEquals("Repeater", manager.databaseFor(exampleB.id()).searchMetadata("", 10).getFirst().tool());
+            assertEquals(
+                    "Repeater",
+                    manager.databaseFor(exampleB.id()).searchMetadata("", 10).getFirst().tool());
         }
     }
 
     @Test
     void targetParserAcceptsWildcardAndUrlsAndNormalizesThem() {
-        List<String> targets = WorkspaceManager.parseTargets("*.Example.COM, https://API.Example.net/login\nsub.example.org.");
-        assertEquals(List.of("example.com", "api.example.net", "sub.example.org"), targets);
+        List<String> targets = WorkspaceManager.parseTargets(
+                "*.Example.COM, https://API.Example.net/login\nsub.example.org.");
+        assertEquals(
+                List.of("example.com", "api.example.net", "sub.example.org"),
+                targets);
     }
 
     @Test
@@ -71,7 +77,14 @@ class WorkspaceManagerTest {
         byte[] response = response(200);
 
         try (HistoryDatabase legacy = new HistoryDatabase(legacyPath)) {
-            legacy.insert(1L, "Proxy", "GET", "https://legacy.test/", 200, request, response);
+            legacy.insert(
+                    1L,
+                    "Proxy",
+                    "GET",
+                    "https://legacy.test/",
+                    200,
+                    request,
+                    response);
         }
 
         try (WorkspaceManager manager = new WorkspaceManager(root)) {
@@ -87,13 +100,105 @@ class WorkspaceManagerTest {
         Path root = tempDir.resolve("root");
         String selectedId;
         try (WorkspaceManager manager = new WorkspaceManager(root)) {
-            Workspace selected = manager.createWorkspace("Selected", List.of("selected.test"));
+            Workspace selected = manager.createWorkspace(
+                    "Selected",
+                    List.of("selected.test"));
             selectedId = selected.id();
         }
 
         try (WorkspaceManager reopened = new WorkspaceManager(root)) {
             assertEquals(selectedId, reopened.activeWorkspace().id());
             assertEquals("Selected", reopened.activeWorkspace().name());
+        }
+    }
+
+    @Test
+    void structuredScopePersistsAcrossRestartAndKeepsExclusions() throws Exception {
+        Path root = tempDir.resolve("root");
+        String workspaceId;
+
+        try (WorkspaceManager manager = new WorkspaceManager(root)) {
+            Workspace workspace = manager.createWorkspace(
+                    "Scoped",
+                    List.of("example.test"));
+            workspaceId = workspace.id();
+
+            WorkspaceScope advanced = new WorkspaceScope(
+                    List.of(new ScopeRule(
+                            true,
+                            "https",
+                            "(?:^|.*\\.)example\\.test$",
+                            "",
+                            "^/api/.*")),
+                    List.of(new ScopeRule(
+                            true,
+                            "any",
+                            "",
+                            "",
+                            "^/api/logout.*")));
+            manager.updateScope(workspaceId, advanced);
+        }
+
+        try (WorkspaceManager reopened = new WorkspaceManager(root)) {
+            reopened.setActiveWorkspace(workspaceId);
+            Workspace workspace = reopened.activeWorkspace();
+
+            assertTrue(workspace.captures("https://api.example.test/api/users"));
+            assertFalse(workspace.captures("https://api.example.test/api/logout"));
+            assertFalse(workspace.captures("https://api.example.test/home"));
+            assertTrue(Files.isRegularFile(
+                    workspace.databasePath().getParent().resolve("scope.json")));
+        }
+    }
+
+    @Test
+    void v20TargetRootsAreConvertedToStructuredScopeWithoutBroadening() throws Exception {
+        Path root = tempDir.resolve("root");
+        Path directory = root.resolve("workspaces").resolve("old-v2");
+        Files.createDirectories(directory);
+        Files.writeString(
+                directory.resolve("workspace.properties"),
+                "id=old-v2\nname=Old V2\ntargets=example.test\n");
+
+        try (WorkspaceManager manager = new WorkspaceManager(root)) {
+            Workspace old = manager.workspaces().stream()
+                    .filter(workspace -> workspace.id().equals("old-v2"))
+                    .findFirst()
+                    .orElseThrow();
+
+            assertTrue(old.captures("https://example.test/"));
+            assertTrue(old.captures("https://api.example.test/"));
+            assertFalse(old.captures("https://other.test/"));
+            assertTrue(Files.isRegularFile(directory.resolve("scope.json")));
+        }
+    }
+
+    @Test
+    void emptyV20WorkspaceRemainsExplicitlyUnscopedAfterUpgrade() throws Exception {
+        Path root = tempDir.resolve("root");
+        Path directory = root.resolve("workspaces").resolve("old-empty");
+        Files.createDirectories(directory);
+        Files.writeString(
+                directory.resolve("workspace.properties"),
+                "id=old-empty\nname=Old Empty\n");
+
+        try (WorkspaceManager manager = new WorkspaceManager(root)) {
+            Workspace old = manager.workspaces().stream()
+                    .filter(workspace -> workspace.id().equals("old-empty"))
+                    .findFirst()
+                    .orElseThrow();
+
+            assertTrue(old.scope().unscoped());
+            assertTrue(old.captures("https://anything.test/"));
+        }
+
+        try (WorkspaceManager reopened = new WorkspaceManager(root)) {
+            Workspace old = reopened.workspaces().stream()
+                    .filter(workspace -> workspace.id().equals("old-empty"))
+                    .findFirst()
+                    .orElseThrow();
+            assertTrue(old.scope().unscoped());
+            assertTrue(old.captures("https://still-anything.test/"));
         }
     }
 
