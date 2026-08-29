@@ -2,6 +2,7 @@ package io.persistenthistory;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.core.ByteArray;
+import burp.api.montoya.http.HttpService;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
 import burp.api.montoya.ui.editor.EditorOptions;
@@ -195,7 +196,13 @@ public final class HistoryPanel extends JPanel implements AutoCloseable {
         if (request == null) {
             requestEditor.setRequest(HttpRequest.httpRequest());
         } else {
-            requestEditor.setRequest(HttpRequest.httpRequest(ByteArray.byteArray(request)));
+            ByteArray requestBytes = ByteArray.byteArray(request);
+            HttpRequest restored = RequestTarget.fromUrl(entry.url())
+                    .map(target -> HttpRequest.httpRequest(
+                            HttpService.httpService(target.host(), target.port(), target.secure()),
+                            requestBytes))
+                    .orElseGet(() -> HttpRequest.httpRequest(requestBytes));
+            requestEditor.setRequest(restored);
         }
 
         byte[] response = entry.response();

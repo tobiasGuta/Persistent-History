@@ -4,7 +4,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>io.persistenthistory</groupId>
   <artifactId>burp-persistent-history</artifactId>
-  <version>1.0.2</version>
+  <version>1.0.3</version>
   <properties>
     <maven.compiler.release>21</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>

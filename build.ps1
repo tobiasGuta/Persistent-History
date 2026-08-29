@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 
-Write-Host 'Persistent HTTP History v1.0.2 build'
+Write-Host 'Persistent HTTP History v1.0.3 build'
 Write-Host '--------------------------------'
 
 if (-not (Get-Command java -ErrorAction SilentlyContinue)) {
@@ -13,7 +13,7 @@ if (-not (Get-Command mvn -ErrorAction SilentlyContinue)) {
 java -version
 mvn clean package
 
-$jar = Join-Path $PSScriptRoot 'target\burp-persistent-history-1.0.2.jar'
+$jar = Join-Path $PSScriptRoot 'target\burp-persistent-history-1.0.3.jar'
 if (-not (Test-Path $jar)) {
     throw "Build finished but expected JAR was not found: $jar"
 }
