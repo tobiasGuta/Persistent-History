@@ -256,7 +256,7 @@ public final class WorkspaceManager implements AutoCloseable {
                 LEGACY_ID,
                 "Legacy / Unscoped",
                 List.of(),
-                WorkspaceScope.unscoped(),
+                WorkspaceScope.captureAll(),
                 legacyDatabase,
                 true);
         contexts.put(legacy.id(), new Context(legacy, new HistoryDatabase(legacyDatabase)));
