@@ -39,9 +39,9 @@ final class ScopeEditorDialog extends JDialog {
 
         JPanel header = new JPanel(new BorderLayout(8, 5));
         header.setBorder(BorderFactory.createEmptyBorder(8, 8, 0, 8));
-        header.add(new JLabel(
-                "<html>Rules use Burp-style matching. When scoped, a request must match an enabled "
-                        + "include rule and must not match an enabled exclude rule.</html>"),
+        header.add(helperText(
+                "Rules use Burp-style matching. When scoped, a request must match an enabled "
+                        + "include rule and must not match an enabled exclude rule."),
                 BorderLayout.CENTER);
         JButton importJson = new JButton("Import Burp JSON...");
         importJson.addActionListener(e -> importJson());
@@ -178,9 +178,9 @@ final class ScopeEditorDialog extends JDialog {
         addField(form, c, 4, "File / path:", file);
 
         c.gridx = 0; c.gridy = 5; c.gridwidth = 2;
-        form.add(new JLabel(
-                "<html>Host and port may be regexes; IPv4 CIDR/ranges are accepted in Host. "
-                        + "File is a path regex and ignores the query string.</html>"), c);
+        form.add(helperText(
+                "Host and port may be regexes; IPv4 CIDR/ranges are accepted in Host. "
+                        + "File is a path regex and ignores the query string."), c);
 
         while (true) {
             int choice = JOptionPane.showConfirmDialog(
@@ -220,6 +220,19 @@ final class ScopeEditorDialog extends JDialog {
         form.add(new JLabel(label), c);
         c.gridx = 1; c.weightx = 1;
         form.add(field, c);
+    }
+
+    private static JTextArea helperText(String text) {
+        JTextArea area = new JTextArea(text);
+        area.setEditable(false);
+        area.setFocusable(false);
+        area.setOpaque(false);
+        area.setLineWrap(true);
+        area.setWrapStyleWord(true);
+        area.setBorder(null);
+        area.setFont(UIManager.getFont("Label.font"));
+        area.setForeground(UIManager.getColor("Label.foreground"));
+        return area;
     }
 
     private void importJson() {
