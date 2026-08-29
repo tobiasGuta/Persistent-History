@@ -192,8 +192,8 @@ public final class HistoryPanel extends JPanel implements AutoCloseable {
         form.add(new JLabel("Quick target roots (one per line or comma-separated, optional):"));
         form.add(new JScrollPane(targets));
         form.add(new JLabel(
-                "<html>Example: example.com also permits api.example.com. "
-                        + "Use Scope... after creation for Burp-style include/exclude rules or JSON import.</html>"));
+                "Example: example.com also permits api.example.com. "
+                        + "Use Scope... after creation for Burp-style include/exclude rules or JSON import."));
 
         int result = JOptionPane.showConfirmDialog(
                 this,
