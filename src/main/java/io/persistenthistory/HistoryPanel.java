@@ -25,11 +25,13 @@ public final class HistoryPanel extends JPanel implements AutoCloseable {
     private static final int UI_ROW_LIMIT = 5000;
 
     private final MontoyaApi api;
-    private final HistoryDatabase db;
+    private final WorkspaceManager workspaces;
     private final HistoryTableModel model = new HistoryTableModel();
     private final JTable table = new JTable(model);
     private final JTextField search = new JTextField();
     private final JLabel status = new JLabel();
+    private final JLabel scopeLabel = new JLabel();
+    private final JComboBox<Workspace> workspaceCombo = new JComboBox<>();
     private final HttpRequestEditor requestEditor;
     private final HttpResponseEditor responseEditor;
     private final ExecutorService dbExecutor;
@@ -38,13 +40,15 @@ public final class HistoryPanel extends JPanel implements AutoCloseable {
     private final AtomicBoolean reloadRunning = new AtomicBoolean(false);
     private final AtomicBoolean reloadPending = new AtomicBoolean(false);
     private final AtomicLong selectionGeneration = new AtomicLong(0);
+    private final AtomicLong workspaceGeneration = new AtomicLong(0);
     private volatile boolean closed;
+    private boolean updatingWorkspaceCombo;
     private PersistentHttpHandler handler;
 
-    public HistoryPanel(MontoyaApi api, HistoryDatabase db) {
+    public HistoryPanel(MontoyaApi api, WorkspaceManager workspaces) {
         super(new BorderLayout());
         this.api = api;
-        this.db = db;
+        this.workspaces = workspaces;
         this.requestEditor = api.userInterface().createHttpRequestEditor(EditorOptions.READ_ONLY);
         this.responseEditor = api.userInterface().createHttpResponseEditor(EditorOptions.READ_ONLY);
         this.dbExecutor = Executors.newSingleThreadExecutor(r -> {
@@ -53,21 +57,35 @@ public final class HistoryPanel extends JPanel implements AutoCloseable {
             return t;
         });
 
+        JButton newWorkspace = new JButton("New workspace");
+        JButton editTargets = new JButton("Targets...");
         JButton refresh = new JButton("Refresh");
         JToggleButton capture = new JToggleButton("Capture enabled", true);
-        JButton clear = new JButton("Clear history");
+        JButton clear = new JButton("Clear workspace");
 
-        JPanel controls = new JPanel(new BorderLayout(8, 0));
-        controls.setBorder(BorderFactory.createEmptyBorder(6, 6, 6, 6));
-        controls.add(new JLabel("Search:"), BorderLayout.WEST);
-        controls.add(search, BorderLayout.CENTER);
+        JPanel workspaceRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        workspaceRow.add(new JLabel("Workspace:"));
+        workspaceCombo.setPrototypeDisplayValue(new Workspace("prototype", "Example Program Workspace", List.of(), workspaces.root(), false));
+        workspaceRow.add(workspaceCombo);
+        workspaceRow.add(newWorkspace);
+        workspaceRow.add(editTargets);
+        workspaceRow.add(scopeLabel);
+
+        JPanel searchRow = new JPanel(new BorderLayout(8, 0));
+        searchRow.add(new JLabel("Search:"), BorderLayout.WEST);
+        searchRow.add(search, BorderLayout.CENTER);
 
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
         buttons.add(status);
         buttons.add(refresh);
         buttons.add(capture);
         buttons.add(clear);
-        controls.add(buttons, BorderLayout.EAST);
+        searchRow.add(buttons, BorderLayout.EAST);
+
+        JPanel controls = new JPanel(new BorderLayout(0, 5));
+        controls.setBorder(BorderFactory.createEmptyBorder(6, 6, 6, 6));
+        controls.add(workspaceRow, BorderLayout.NORTH);
+        controls.add(searchRow, BorderLayout.CENTER);
         add(controls, BorderLayout.NORTH);
 
         JPanel requestPanel = editorPanel("Original request", requestEditor.uiComponent());
@@ -95,6 +113,12 @@ public final class HistoryPanel extends JPanel implements AutoCloseable {
         captureRefreshTimer = new Timer(250, e -> reloadAsync());
         captureRefreshTimer.setRepeats(false);
 
+        refreshWorkspaceChoices(workspaces.activeWorkspace().id());
+        updateScopeLabel();
+
+        workspaceCombo.addActionListener(e -> switchWorkspaceFromUi());
+        newWorkspace.addActionListener(e -> createWorkspace());
+        editTargets.addActionListener(e -> editWorkspaceTargets());
         refresh.addActionListener(e -> reloadAsync());
         capture.addActionListener(e -> {
             if (handler != null) handler.setEnabled(capture.isSelected());
@@ -125,12 +149,129 @@ public final class HistoryPanel extends JPanel implements AutoCloseable {
         this.handler = handler;
     }
 
-    public void onCaptured(HistoryEntry ignored) {
+    public void onCaptured(WorkspaceManager.CaptureResult result) {
         SwingUtilities.invokeLater(() -> {
-            if (!closed && !captureRefreshTimer.isRunning()) {
+            if (closed || result == null) return;
+            Workspace current = workspaces.activeWorkspace();
+            if (current.id().equals(result.workspaceId()) && !captureRefreshTimer.isRunning()) {
                 captureRefreshTimer.start();
             }
         });
+    }
+
+    private void switchWorkspaceFromUi() {
+        if (closed || updatingWorkspaceCombo) return;
+        Workspace selected = (Workspace) workspaceCombo.getSelectedItem();
+        if (selected == null) return;
+        try {
+            workspaces.setActiveWorkspace(selected.id());
+            workspaceChanged();
+        } catch (Exception e) {
+            api.logging().logToError("Workspace switch failed: " + e);
+            JOptionPane.showMessageDialog(this, "Could not switch workspace: " + e.getMessage(), "Workspace error", JOptionPane.ERROR_MESSAGE);
+            refreshWorkspaceChoices(workspaces.activeWorkspace().id());
+        }
+    }
+
+    private void createWorkspace() {
+        JTextField name = new JTextField(30);
+        JTextArea targets = new JTextArea(5, 34);
+        targets.setLineWrap(true);
+        targets.setWrapStyleWord(true);
+
+        JPanel form = new JPanel();
+        form.setLayout(new BoxLayout(form, BoxLayout.Y_AXIS));
+        form.add(new JLabel("Workspace / program name:"));
+        form.add(name);
+        form.add(Box.createVerticalStrut(8));
+        form.add(new JLabel("Target roots (one per line or comma-separated):"));
+        form.add(new JScrollPane(targets));
+        form.add(new JLabel("Example: example.com also permits api.example.com. Leave empty only for an intentionally unscoped workspace."));
+
+        int result = JOptionPane.showConfirmDialog(
+                this,
+                form,
+                "New workspace",
+                JOptionPane.OK_CANCEL_OPTION,
+                JOptionPane.PLAIN_MESSAGE);
+        if (result != JOptionPane.OK_OPTION) return;
+
+        try {
+            Workspace created = workspaces.createWorkspace(name.getText(), WorkspaceManager.parseTargets(targets.getText()));
+            refreshWorkspaceChoices(created.id());
+            workspaceChanged();
+        } catch (Exception e) {
+            api.logging().logToError("Workspace creation failed: " + e);
+            JOptionPane.showMessageDialog(this, e.getMessage(), "Workspace error", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void editWorkspaceTargets() {
+        Workspace workspace = workspaces.activeWorkspace();
+        if (workspace.legacy()) {
+            JOptionPane.showMessageDialog(
+                    this,
+                    "Legacy / Unscoped preserves the original v1 database and captures all targets.\nCreate a workspace to enable target isolation.",
+                    "Legacy workspace",
+                    JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+
+        JTextArea targets = new JTextArea(String.join(System.lineSeparator(), workspace.targets()), 7, 36);
+        targets.setLineWrap(true);
+        targets.setWrapStyleWord(true);
+        int result = JOptionPane.showConfirmDialog(
+                this,
+                new JScrollPane(targets),
+                "Targets for " + workspace.name(),
+                JOptionPane.OK_CANCEL_OPTION,
+                JOptionPane.PLAIN_MESSAGE);
+        if (result != JOptionPane.OK_OPTION) return;
+
+        try {
+            Workspace updated = workspaces.updateTargets(workspace.id(), WorkspaceManager.parseTargets(targets.getText()));
+            refreshWorkspaceChoices(updated.id());
+            workspaceChanged();
+        } catch (Exception e) {
+            api.logging().logToError("Workspace target update failed: " + e);
+            JOptionPane.showMessageDialog(this, e.getMessage(), "Workspace error", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void workspaceChanged() {
+        workspaceGeneration.incrementAndGet();
+        selectionGeneration.incrementAndGet();
+        model.setRows(List.of());
+        clearEditors();
+        updateScopeLabel();
+        reloadAsync();
+    }
+
+    private void refreshWorkspaceChoices(String selectedId) {
+        updatingWorkspaceCombo = true;
+        try {
+            DefaultComboBoxModel<Workspace> comboModel = new DefaultComboBoxModel<>();
+            Workspace selected = null;
+            for (Workspace workspace : workspaces.workspaces()) {
+                comboModel.addElement(workspace);
+                if (workspace.id().equals(selectedId)) {
+                    selected = workspace;
+                }
+            }
+            workspaceCombo.setModel(comboModel);
+            if (selected != null) {
+                workspaceCombo.setSelectedItem(selected);
+            }
+        } finally {
+            updatingWorkspaceCombo = false;
+        }
+    }
+
+    private void updateScopeLabel() {
+        Workspace workspace = workspaces.activeWorkspace();
+        String label = workspace.scoped() ? "Targets: " + workspace.scopeLabel() : "Targets: All (unscoped)";
+        scopeLabel.setText(label);
+        scopeLabel.setToolTipText(label);
     }
 
     private void reloadAsync() {
@@ -140,11 +281,16 @@ public final class HistoryPanel extends JPanel implements AutoCloseable {
             return;
         }
 
-        final String query = search.getText();
+        Workspace workspace = workspaces.activeWorkspace();
+        String workspaceId = workspace.id();
+        long generation = workspaceGeneration.get();
+        HistoryDatabase db = workspaces.databaseFor(workspaceId);
+        String query = search.getText();
+
         CompletableFuture
                 .supplyAsync(() -> {
                     try {
-                        return new LoadResult(db.searchMetadata(query, UI_ROW_LIMIT), db.count());
+                        return new LoadResult(workspaceId, workspace, db.searchMetadata(query, UI_ROW_LIMIT), db.count());
                     } catch (Exception e) {
                         throw new RuntimeException(e);
                     }
@@ -152,12 +298,19 @@ public final class HistoryPanel extends JPanel implements AutoCloseable {
                 .whenComplete((result, error) -> SwingUtilities.invokeLater(() -> {
                     try {
                         if (closed) return;
+                        boolean stale = generation != workspaceGeneration.get()
+                                || !workspaceId.equals(workspaces.activeWorkspace().id());
+                        if (stale) return;
+
                         if (error != null) {
                             status.setText("Database error");
                             api.logging().logToError("Persistent History reload failed: " + error.getCause());
                         } else {
                             model.setRows(result.rows());
-                            status.setText("Stored: " + result.count() + (result.count() > UI_ROW_LIMIT ? " (showing newest " + UI_ROW_LIMIT + ")" : ""));
+                            long skipped = workspaces.skippedOutsideTargets(result.workspaceId());
+                            String limit = result.count() > UI_ROW_LIMIT ? " (showing newest " + UI_ROW_LIMIT + ")" : "";
+                            String isolation = result.workspace().scoped() ? " | skipped outside targets: " + skipped : "";
+                            status.setText("Stored: " + result.count() + limit + isolation);
                         }
                     } finally {
                         reloadRunning.set(false);
@@ -170,7 +323,12 @@ public final class HistoryPanel extends JPanel implements AutoCloseable {
 
     private void loadEntryAsync(long id) {
         if (closed) return;
-        long generation = selectionGeneration.incrementAndGet();
+        Workspace workspace = workspaces.activeWorkspace();
+        String workspaceId = workspace.id();
+        HistoryDatabase db = workspaces.databaseFor(workspaceId);
+        long selection = selectionGeneration.incrementAndGet();
+        long generation = workspaceGeneration.get();
+
         CompletableFuture
                 .supplyAsync(() -> {
                     try {
@@ -180,7 +338,8 @@ public final class HistoryPanel extends JPanel implements AutoCloseable {
                     }
                 }, dbExecutor)
                 .whenComplete((entry, error) -> SwingUtilities.invokeLater(() -> {
-                    if (closed || generation != selectionGeneration.get()) return;
+                    if (closed || selection != selectionGeneration.get() || generation != workspaceGeneration.get()) return;
+                    if (!workspaceId.equals(workspaces.activeWorkspace().id())) return;
                     if (error != null) {
                         api.logging().logToError("Persistent History entry load failed: " + error.getCause());
                         return;
@@ -217,14 +376,17 @@ public final class HistoryPanel extends JPanel implements AutoCloseable {
     }
 
     private void clearHistory() {
+        Workspace workspace = workspaces.activeWorkspace();
         if (JOptionPane.showConfirmDialog(
                 this,
-                "Delete all persisted HTTP history?",
-                "Clear history",
+                "Delete all persisted HTTP history from workspace '" + workspace.name() + "'?",
+                "Clear workspace history",
                 JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) {
             return;
         }
 
+        String workspaceId = workspace.id();
+        HistoryDatabase db = workspaces.databaseFor(workspaceId);
         CompletableFuture
                 .runAsync(() -> {
                     try {
@@ -234,16 +396,20 @@ public final class HistoryPanel extends JPanel implements AutoCloseable {
                     }
                 }, dbExecutor)
                 .whenComplete((ignored, error) -> SwingUtilities.invokeLater(() -> {
-                    if (closed) return;
+                    if (closed || !workspaceId.equals(workspaces.activeWorkspace().id())) return;
                     if (error != null) {
                         api.logging().logToError("Clear failed: " + error.getCause());
                         return;
                     }
                     selectionGeneration.incrementAndGet();
-                    requestEditor.setRequest(HttpRequest.httpRequest());
-                    responseEditor.setResponse(HttpResponse.httpResponse());
+                    clearEditors();
                     reloadAsync();
                 }));
+    }
+
+    private void clearEditors() {
+        requestEditor.setRequest(HttpRequest.httpRequest());
+        responseEditor.setResponse(HttpResponse.httpResponse());
     }
 
     @Override
@@ -259,5 +425,5 @@ public final class HistoryPanel extends JPanel implements AutoCloseable {
         }
     }
 
-    private record LoadResult(List<HistoryEntry> rows, long count) {}
+    private record LoadResult(String workspaceId, Workspace workspace, List<HistoryEntry> rows, long count) {}
 }
