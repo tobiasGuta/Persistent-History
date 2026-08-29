@@ -11,6 +11,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.mockito.MockedStatic;
 
 import java.nio.file.Path;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -22,10 +23,11 @@ class PersistentHttpHandlerTest {
 
     @Test
     void sameMontoyaMessageIdIsPersistedOnlyOnce() throws Exception {
-        try (HistoryDatabase db = new HistoryDatabase(tempDir.resolve("dedupe.sqlite3"))) {
+        try (WorkspaceManager manager = scopedManager()) {
+            HistoryDatabase db = manager.databaseFor(manager.activeWorkspace().id());
             AtomicInteger notifications = new AtomicInteger();
-            PersistentHttpHandler handler = new PersistentHttpHandler(db, ignored -> notifications.incrementAndGet());
-            HttpResponseReceived received = response(101, ToolType.PROXY);
+            PersistentHttpHandler handler = new PersistentHttpHandler(manager, ignored -> notifications.incrementAndGet());
+            HttpResponseReceived received = response(101, ToolType.PROXY, "https://example.test/submit");
 
             try (MockedStatic<ResponseReceivedAction> actions = mockStatic(ResponseReceivedAction.class)) {
                 actions.when(() -> ResponseReceivedAction.continueWith(received)).thenReturn(mock(ResponseReceivedAction.class));
@@ -40,10 +42,11 @@ class PersistentHttpHandlerTest {
 
     @Test
     void identicalTrafficWithDifferentMessageIdsIsNotOverDeduplicated() throws Exception {
-        try (HistoryDatabase db = new HistoryDatabase(tempDir.resolve("legitimate-repeat.sqlite3"))) {
-            PersistentHttpHandler handler = new PersistentHttpHandler(db, ignored -> {});
-            HttpResponseReceived first = response(201, ToolType.REPEATER);
-            HttpResponseReceived second = response(202, ToolType.REPEATER);
+        try (WorkspaceManager manager = scopedManager()) {
+            HistoryDatabase db = manager.databaseFor(manager.activeWorkspace().id());
+            PersistentHttpHandler handler = new PersistentHttpHandler(manager, ignored -> {});
+            HttpResponseReceived first = response(201, ToolType.REPEATER, "https://example.test/submit");
+            HttpResponseReceived second = response(202, ToolType.REPEATER, "https://example.test/submit");
 
             try (MockedStatic<ResponseReceivedAction> actions = mockStatic(ResponseReceivedAction.class)) {
                 ResponseReceivedAction continued = mock(ResponseReceivedAction.class);
@@ -59,9 +62,10 @@ class PersistentHttpHandlerTest {
 
     @Test
     void repeaterTrafficKeepsRepeaterProvenance() throws Exception {
-        try (HistoryDatabase db = new HistoryDatabase(tempDir.resolve("repeater.sqlite3"))) {
-            PersistentHttpHandler handler = new PersistentHttpHandler(db, ignored -> {});
-            HttpResponseReceived received = response(301, ToolType.REPEATER);
+        try (WorkspaceManager manager = scopedManager()) {
+            HistoryDatabase db = manager.databaseFor(manager.activeWorkspace().id());
+            PersistentHttpHandler handler = new PersistentHttpHandler(manager, ignored -> {});
+            HttpResponseReceived received = response(301, ToolType.REPEATER, "https://example.test/submit");
 
             try (MockedStatic<ResponseReceivedAction> actions = mockStatic(ResponseReceivedAction.class)) {
                 actions.when(() -> ResponseReceivedAction.continueWith(received)).thenReturn(mock(ResponseReceivedAction.class));
@@ -77,10 +81,11 @@ class PersistentHttpHandlerTest {
 
     @Test
     void pausedCaptureDoesNotPersist() throws Exception {
-        try (HistoryDatabase db = new HistoryDatabase(tempDir.resolve("paused.sqlite3"))) {
-            PersistentHttpHandler handler = new PersistentHttpHandler(db, ignored -> fail("capture callback should not run"));
+        try (WorkspaceManager manager = scopedManager()) {
+            HistoryDatabase db = manager.databaseFor(manager.activeWorkspace().id());
+            PersistentHttpHandler handler = new PersistentHttpHandler(manager, ignored -> fail("capture callback should not run"));
             handler.setEnabled(false);
-            HttpResponseReceived received = response(401, ToolType.PROXY);
+            HttpResponseReceived received = response(401, ToolType.PROXY, "https://example.test/submit");
 
             try (MockedStatic<ResponseReceivedAction> actions = mockStatic(ResponseReceivedAction.class)) {
                 actions.when(() -> ResponseReceivedAction.continueWith(received)).thenReturn(mock(ResponseReceivedAction.class));
@@ -91,7 +96,32 @@ class PersistentHttpHandlerTest {
         }
     }
 
-    private static HttpResponseReceived response(int messageId, ToolType toolType) {
+    @Test
+    void requestOutsideWorkspaceTargetsIsNotPersisted() throws Exception {
+        try (WorkspaceManager manager = scopedManager()) {
+            HistoryDatabase db = manager.databaseFor(manager.activeWorkspace().id());
+            AtomicInteger notifications = new AtomicInteger();
+            PersistentHttpHandler handler = new PersistentHttpHandler(manager, ignored -> notifications.incrementAndGet());
+            HttpResponseReceived received = response(501, ToolType.PROXY, "https://other-target.test/submit");
+
+            try (MockedStatic<ResponseReceivedAction> actions = mockStatic(ResponseReceivedAction.class)) {
+                actions.when(() -> ResponseReceivedAction.continueWith(received)).thenReturn(mock(ResponseReceivedAction.class));
+                handler.handleHttpResponseReceived(received);
+            }
+
+            assertEquals(0, db.count());
+            assertEquals(0, notifications.get());
+            assertEquals(1, manager.skippedOutsideTargets(manager.activeWorkspace().id()));
+        }
+    }
+
+    private WorkspaceManager scopedManager() throws Exception {
+        WorkspaceManager manager = new WorkspaceManager(tempDir.resolve("root-" + System.nanoTime()));
+        manager.createWorkspace("Example", List.of("example.test"));
+        return manager;
+    }
+
+    private static HttpResponseReceived response(int messageId, ToolType toolType, String url) {
         byte[] requestBytes = "POST /submit HTTP/1.1\r\nHost: example.test\r\nContent-Length: 2\r\n\r\n{}".getBytes();
         byte[] responseBytes = "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}".getBytes();
 
@@ -103,7 +133,7 @@ class PersistentHttpHandlerTest {
         HttpRequest request = mock(HttpRequest.class);
         when(request.toByteArray()).thenReturn(requestArray);
         when(request.method()).thenReturn("POST");
-        when(request.url()).thenReturn("https://example.test/submit");
+        when(request.url()).thenReturn(url);
 
         ToolSource toolSource = mock(ToolSource.class);
         when(toolSource.toolType()).thenReturn(toolType);

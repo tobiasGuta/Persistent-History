@@ -6,17 +6,17 @@ import burp.api.montoya.MontoyaApi;
 import java.nio.file.Path;
 
 public final class PersistentHistoryExtension implements BurpExtension {
-    private HistoryDatabase db;
+    private WorkspaceManager workspaces;
     private HistoryPanel panel;
 
     @Override
     public void initialize(MontoyaApi api) {
         api.extension().setName("Persistent HTTP History");
         try {
-            Path dbPath = Path.of(System.getProperty("user.home"), ".burp-persistent-history", "history.sqlite3");
-            db = new HistoryDatabase(dbPath);
-            panel = new HistoryPanel(api, db);
-            PersistentHttpHandler handler = new PersistentHttpHandler(db, panel::onCaptured);
+            Path root = Path.of(System.getProperty("user.home"), ".burp-persistent-history");
+            workspaces = new WorkspaceManager(root);
+            panel = new HistoryPanel(api, workspaces);
+            PersistentHttpHandler handler = new PersistentHttpHandler(workspaces, panel::onCaptured);
             panel.bindHandler(handler);
 
             api.userInterface().registerSuiteTab("Persistent History", panel);
@@ -26,12 +26,13 @@ public final class PersistentHistoryExtension implements BurpExtension {
                     if (panel != null) panel.close();
                 } catch (Exception ignored) {}
                 try {
-                    if (db != null) db.close();
+                    if (workspaces != null) workspaces.close();
                 } catch (Exception ignored) {}
             });
 
-            api.logging().logToOutput("Persistent HTTP History v1.0.3 loaded");
-            api.logging().logToOutput("Database: " + db.path());
+            api.logging().logToOutput("Persistent HTTP History v2.0.0 loaded");
+            api.logging().logToOutput("Storage root: " + workspaces.root());
+            api.logging().logToOutput("Active workspace: " + workspaces.activeWorkspace().name());
         } catch (Exception e) {
             api.logging().logToError("Persistent HTTP History failed to initialize: " + e);
         }

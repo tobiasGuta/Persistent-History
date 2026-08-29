@@ -28,5 +28,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: burp-persistent-history
-          path: target/burp-persistent-history-1.0.3.jar
+          path: target/burp-persistent-history-2.0.0.jar
           if-no-files-found: error
