@@ -4,6 +4,7 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -19,6 +20,7 @@ import java.util.stream.Stream;
 
 public final class WorkspaceManager implements AutoCloseable {
     private static final String LEGACY_ID = "legacy";
+    private static final String SCOPE_FILE = "scope.json";
 
     private final Path root;
     private final Path workspacesRoot;
@@ -93,23 +95,18 @@ public final class WorkspaceManager implements AutoCloseable {
     }
 
     public synchronized Workspace updateTargets(String workspaceId, List<String> targets) throws Exception {
-        Context context = contexts.get(workspaceId);
-        if (context == null) {
-            throw new IllegalArgumentException("Unknown workspace: " + workspaceId);
-        }
-        if (context.workspace.legacy()) {
-            throw new IllegalArgumentException("Legacy history is intentionally unscoped. Create a workspace to use target isolation.");
-        }
+        List<String> normalized = normalizeTargets(targets);
+        return updateScopeInternal(
+                workspaceId,
+                normalized,
+                WorkspaceScope.fromTargetRoots(normalized));
+    }
 
-        Workspace updated = new Workspace(
-                context.workspace.id(),
-                context.workspace.name(),
-                normalizeTargets(targets),
-                context.workspace.databasePath(),
-                false);
-        writeWorkspaceMetadata(updated);
-        context.workspace = updated;
-        return updated;
+    public synchronized Workspace updateScope(String workspaceId, WorkspaceScope scope) throws Exception {
+        if (scope == null) {
+            throw new IllegalArgumentException("Workspace scope cannot be null.");
+        }
+        return updateScopeInternal(workspaceId, List.of(), scope);
     }
 
     public CaptureResult capture(long capturedAt, String tool, String method, String url,
@@ -215,6 +212,31 @@ public final class WorkspaceManager implements AutoCloseable {
         }
     }
 
+    private synchronized Workspace updateScopeInternal(
+            String workspaceId,
+            List<String> targetRoots,
+            WorkspaceScope scope) throws Exception {
+        Context context = contexts.get(workspaceId);
+        if (context == null) {
+            throw new IllegalArgumentException("Unknown workspace: " + workspaceId);
+        }
+        if (context.workspace.legacy()) {
+            throw new IllegalArgumentException(
+                    "Legacy history is intentionally unscoped. Create a workspace to use scope isolation.");
+        }
+
+        Workspace updated = new Workspace(
+                context.workspace.id(),
+                context.workspace.name(),
+                targetRoots,
+                scope,
+                context.workspace.databasePath(),
+                false);
+        writeWorkspaceMetadata(updated);
+        context.workspace = updated;
+        return updated;
+    }
+
     private Context activeContext() {
         synchronized (this) {
             Context context = contexts.get(activeWorkspaceId);
@@ -234,6 +256,7 @@ public final class WorkspaceManager implements AutoCloseable {
                 LEGACY_ID,
                 "Legacy / Unscoped",
                 List.of(),
+                WorkspaceScope.unscoped(),
                 legacyDatabase,
                 true);
         contexts.put(legacy.id(), new Context(legacy, new HistoryDatabase(legacyDatabase)));
@@ -257,10 +280,31 @@ public final class WorkspaceManager implements AutoCloseable {
                 if (id.isEmpty() || name.isEmpty() || contexts.containsKey(id)) {
                     continue;
                 }
+
                 List<String> targets = parseTargets(properties.getProperty("targets", ""));
+                Path scopePath = directory.resolve(SCOPE_FILE);
+                WorkspaceScope scope;
+                if (Files.isRegularFile(scopePath)) {
+                    WorkspaceScope imported = BurpScopeJson.importScope(scopePath);
+                    boolean unscoped = Boolean.parseBoolean(
+                            properties.getProperty("unscoped", "false"));
+                    scope = new WorkspaceScope(
+                            imported.include(),
+                            imported.exclude(),
+                            unscoped);
+                } else {
+                    scope = WorkspaceScope.fromTargetRoots(targets);
+                }
+
                 Path databasePath = directory.resolve("history.sqlite3");
-                Workspace workspace = new Workspace(id, name, targets, databasePath, false);
+                Workspace workspace = new Workspace(id, name, targets, scope, databasePath, false);
                 contexts.put(id, new Context(workspace, new HistoryDatabase(databasePath)));
+
+                // V2.0 workspaces did not have scope.json. Persist the converted
+                // structured scope after successfully loading the old target roots.
+                if (!Files.isRegularFile(scopePath)) {
+                    writeWorkspaceMetadata(workspace);
+                }
             }
         }
     }
@@ -270,7 +314,13 @@ public final class WorkspaceManager implements AutoCloseable {
         String id = base + "-" + UUID.randomUUID().toString().substring(0, 8);
         Path directory = workspacesRoot.resolve(id);
         Files.createDirectories(directory);
-        Workspace workspace = new Workspace(id, name, targets, directory.resolve("history.sqlite3"), false);
+        Workspace workspace = new Workspace(
+                id,
+                name,
+                targets,
+                WorkspaceScope.fromTargetRoots(targets),
+                directory.resolve("history.sqlite3"),
+                false);
         writeWorkspaceMetadata(workspace);
         contexts.put(id, new Context(workspace, new HistoryDatabase(workspace.databasePath())));
         return workspace;
@@ -279,12 +329,28 @@ public final class WorkspaceManager implements AutoCloseable {
     private void writeWorkspaceMetadata(Workspace workspace) throws Exception {
         Path directory = workspace.databasePath().getParent();
         Files.createDirectories(directory);
+
         Properties properties = new Properties();
         properties.setProperty("id", workspace.id());
         properties.setProperty("name", workspace.name());
-        properties.setProperty("targets", String.join(",", workspace.targets()));
-        try (var writer = Files.newBufferedWriter(directory.resolve("workspace.properties"), StandardCharsets.UTF_8)) {
+        properties.setProperty("unscoped", Boolean.toString(workspace.scope().unscoped()));
+        if (!workspace.targets().isEmpty()) {
+            properties.setProperty("targets", String.join(",", workspace.targets()));
+        }
+        Path metadata = directory.resolve("workspace.properties");
+        try (var writer = Files.newBufferedWriter(metadata, StandardCharsets.UTF_8)) {
             properties.store(writer, "Persistent HTTP History workspace");
+        }
+
+        Path scope = directory.resolve(SCOPE_FILE);
+        Path tempScope = directory.resolve(SCOPE_FILE + ".tmp");
+        BurpScopeJson.writeScope(tempScope, workspace.scope());
+        try {
+            Files.move(tempScope, scope,
+                    StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE);
+        } catch (java.nio.file.AtomicMoveNotSupportedException ignored) {
+            Files.move(tempScope, scope, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 

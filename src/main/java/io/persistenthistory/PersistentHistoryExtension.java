@@ -30,7 +30,7 @@ public final class PersistentHistoryExtension implements BurpExtension {
                 } catch (Exception ignored) {}
             });
 
-            api.logging().logToOutput("Persistent HTTP History v2.0.0 loaded");
+            api.logging().logToOutput("Persistent HTTP History v2.1.0 loaded");
             api.logging().logToOutput("Storage root: " + workspaces.root());
             api.logging().logToOutput("Active workspace: " + workspaces.activeWorkspace().name());
         } catch (Exception e) {
