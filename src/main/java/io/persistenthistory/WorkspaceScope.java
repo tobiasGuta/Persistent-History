@@ -16,13 +16,13 @@ public record WorkspaceScope(
         this(include, exclude, false);
     }
 
-    public static WorkspaceScope unscoped() {
+    public static WorkspaceScope captureAll() {
         return new WorkspaceScope(List.of(), List.of(), true);
     }
 
     public static WorkspaceScope fromTargetRoots(List<String> roots) {
         if (roots == null || roots.isEmpty()) {
-            return unscoped();
+            return captureAll();
         }
         return new WorkspaceScope(
                 roots.stream().map(ScopeRule::fromTargetRoot).toList(),
