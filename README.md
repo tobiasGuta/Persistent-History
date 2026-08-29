@@ -2,7 +2,7 @@
 
 Persistent HTTP History keeps a durable, searchable copy of Burp HTTP request/response traffic in SQLite so Community Edition users do not lose their research history when Burp closes.
 
-Current version: **v2.1.0**
+Current version: **v2.1.1**
 
 ## v2.1: Burp-style workspace scope
 
@@ -53,6 +53,10 @@ Use this with a JSON settings file saved from Burp's Target scope settings. The 
 It also accepts full Burp settings JSON files when the `target.scope` section is nested inside the document, and it converts normal-scope `prefix` entries into structured rules.
 
 Importing only loads the rules into the editor. Review them and click **Save** before they become active.
+
+### v2.1.1 UI fix
+
+V2.1.1 removes Swing HTML helper-label markup from the workspace and scope dialogs. This prevents Burp themes that disable Swing HTML rendering from displaying literal `<html>` text. Scope rules, workspace databases, and stored history are unchanged.
 
 ## Scope behavior
 
@@ -192,7 +196,7 @@ mvn clean verify
 Load:
 
 ```text
-target/burp-persistent-history-2.1.0.jar
+target/burp-persistent-history-2.1.1.jar
 ```
 
 in:
