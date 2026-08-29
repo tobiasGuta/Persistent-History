@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Test and package
+        run: mvn --batch-mode --no-transfer-progress verify
+
+      - name: Upload Burp extension JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: burp-persistent-history
+          path: target/burp-persistent-history-1.0.2.jar
+          if-no-files-found: error
